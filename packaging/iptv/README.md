@@ -10,6 +10,7 @@ mirakc が選局、サービス分離、番組表収集、M3U / XMLTV 配信を�
 - 修正済み `pixd.service` が `/run/pix-userland`、instance `tuner` で稼働。
 - `/home/pi/pix-userland/build/cmake/pix-ts` が存在する。
 - LAN アドレスは `192.168.1.16`。`config.yml` の待受アドレスを実機に合わせる。
+- Tailscale アドレスは `100.101.158.9`。Pi の Tailscale が接続済みであること。
 - アンテナと B-CAS カードは接続済み。DT295 内部で復号するため、外部 B25 は使わない。
 
 `config.yml` のチャンネルは地域・受信設備に依存します。物理チャンネル番号と
@@ -63,6 +64,26 @@ IPTVX など、M3U と XMLTV を指定できるアプリで新しいプレイリ
 プレイリストと番組表の読み込み後にチャンネルを選択します。
 アプリ側の映像形式は MPEG-TS の直接再生を使います。サーバーでの再エンコードは行いません。
 
+Pi 上で Tailscale Serve の TCP 転送を有効にします。`--bg` の設定は再起動後も保持されます。
+
+```sh
+sudo tailscale serve --bg --tcp=40772 tcp://127.0.0.1:40772
+sudo tailscale serve status
+```
+
+mirakc 3.4.92 は Tailscale の IPv4 アドレスからの直接アクセスを拒否するため、
+Serve で localhost へ中継します。mirakc の待受に Tailscale IP を追加する必要はありません。
+この転送は Tailscale 内だけで利用できます。
+
+外出先では視聴端末も Pi と同じ Tailscale ネットワークへ接続し、次の URL を登録します。
+M3U を Tailscale の URL から読み込むことで、一覧内の再生 URL も同じアドレスになります。
+
+- M3U URL: `http://100.101.158.9:40772/api/iptv/playlist`
+- EPG / XMLTV URL: `http://100.101.158.9:40772/api/iptv/xmltv`
+
+外出先では、自宅の上りと視聴先の下りに放送 TS を送れる帯域が必要です。
+転送を止める場合は `sudo tailscale serve --tcp=40772 off` を実行します。
+
 ## 検証・運用
 
 ```sh
@@ -73,11 +94,14 @@ python3 packaging/iptv/check.py http://192.168.1.16:40772
 
 検証スクリプトは全チャンネルへ順番に選局するので、視聴していない時間に実行してください。
 M3U と XMLTV の ID 対応、番組情報の存在、各 URL の TS パケットを検査します。
+Tailscale 経由を検証する場合は、同じネットワークに参加した別端末から
+`python3 packaging/iptv/check.py http://100.101.158.9:40772` を実行します。
 
 2026-11-10、Raspberry Pi 3 Model B / Debian 13 / PIX-DT295 で7局すべてを検証しました。
 XMLTV は2,203番組（11月18日未明まで）を収録し、全局で MPEG-2 映像
 （1440×1080）と AAC 音声（48 kHz）を確認しました。`pixd` の通常再起動後も
 配信が自動復帰し、番組表キャッシュを復元して同じ7局の検査に合格しています。
+別の端末から Tailscale Serve 経由でも7局・2,203番組の同じ検査に合格しています。
 Apple TV アプリ内での番組表表示・リモコン操作は、この検証には含みません。
 
 DT295 は1系統です。異なる物理チャンネルを同時に視聴できません。
@@ -86,7 +110,7 @@ mirakc の番組表収集は視聴より低優先度で、視聴要求があれ�
 初回の番組表収集には数分以上かかります。全局の情報がそろわない場合は、
 視聴を停止して次の収集を待ってください。
 
-LAN 内向けの配信です。ルーターでポートをインターネットへ公開しないでください。
+LAN と Tailscale 内向けの配信です。ルーターでポートをインターネットへ公開しないでください。
 Pi の IP が変わる場合は DHCP 予約を設定するか、待受設定とアプリの URL を変更します。
 
 ## 以前の固定チャンネル配信へ戻す
@@ -102,3 +126,5 @@ sudo systemctl enable --now pix-live
 
 - [mirakc 設定（3.4.92）](https://github.com/mirakc/mirakc/blob/3.4.92/docs/config.md)
 - [mirakc IPTV API](https://github.com/mirakc/mirakc/blob/3.4.92/docs/web-api.md)
+- [mirakc 3.4.92 のアクセス制御](https://github.com/mirakc/mirakc/blob/3.4.92/mirakc-core/src/web/access_control.rs)
+- [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve)
