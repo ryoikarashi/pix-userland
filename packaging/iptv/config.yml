@@ -1,0 +1,56 @@
+# Kyoto (Hieizan) main services verified on the target antenna.
+epg:
+  cache-dir: /var/lib/mirakc/epg
+server:
+  addrs:
+    - http: '192.168.1.16:40772'
+    - http: '127.0.0.1:40772'
+  stream-time-limit: 45000
+  stream-max-chunks: 128
+channels:
+  - name: '京都 NHK総合'
+    type: GR
+    channel: '25'
+    services: [41984]
+  - name: '京都 Eテレ'
+    type: GR
+    channel: '40'
+    services: [2056]
+  - name: '京都 MBS'
+    type: GR
+    channel: '33'
+    services: [2064]
+  - name: '京都 KBS'
+    type: GR
+    channel: '23'
+    services: [42032]
+  - name: '京都 ABC'
+    type: GR
+    channel: '38'
+    services: [2072]
+  - name: '京都 カンテレ'
+    type: GR
+    channel: '42'
+    services: [2080]
+  - name: '京都 読売'
+    type: GR
+    channel: '35'
+    services: [2088]
+tuners:
+  - name: PIX-DT295
+    types: [GR]
+    command: >-
+      /usr/local/bin/pix-ts --runtime-dir /run/pix-userland --instance tuner
+      --receiver 0 --channel T{{{channel}}} --output -
+    decoded: true
+    time-limit: 45000
+jobs:
+  scan-services:
+    command: timeout 45 mirakc-arib scan-services{{#sids}} --sids={{{.}}}{{/sids}}{{#xsids}} --xsids={{{.}}}{{/xsids}}
+    schedule: '0 0 4 * * * *'
+  sync-clocks:
+    command: timeout 45 mirakc-arib sync-clocks{{#sids}} --sids={{{.}}}{{/sids}}{{#xsids}} --xsids={{{.}}}{{/xsids}}
+    schedule: '0 15 4 * * * *'
+  update-schedules:
+    command: timeout 120 mirakc-arib collect-eits --only-actual --time-limit=15000{{#sids}} --sids={{{.}}}{{/sids}}{{#xsids}} --xsids={{{.}}}{{/xsids}}
+    schedule: '0 30 4,16 * * * *'

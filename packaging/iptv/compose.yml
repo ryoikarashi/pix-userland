@@ -1,0 +1,27 @@
+services:
+  mirakc:
+    image: mirakc/mirakc:3.4.92@sha256:82de991086dd9beef7b27407c0f91c983d2d6d17323bdc6f1a71a196c7f57819
+    container_name: pix-iptv
+    network_mode: host
+    user: "1000:1000"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: Asia/Tokyo
+      MIRAKC_CONFIG: /etc/mirakc/config.yml
+      MIRAKC_EPG_FRESH_PERIOD: 12h
+      RUST_LOG: info
+    volumes:
+      - ./config.yml:/etc/mirakc/config.yml:ro
+      - /home/pi/pix-userland/build/cmake/pix-ts:/usr/local/bin/pix-ts:ro
+      - /run/pix-userland:/run/pix-userland:ro
+      - /var/lib/pix-iptv/epg:/var/lib/mirakc/epg
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"

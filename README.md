@@ -332,6 +332,7 @@ libusb 1.0.30 を静的リンクした Windows x64 用の実行ファイル（`p
 - [validation.md](docs/validation.md): 実機および CI における検証記録の詳細
 - [releases.md](docs/releases.md): 配布バイナリのビルド環境および CI パイプラインの詳細
 - [dt295.md](docs/dt295.md): PIX-DT295 の開発状況および制限事項
+- [Apple TV 向け IPTV](packaging/iptv/README.md): mirakc による地上波の選局、番組表配信、Apple TV アプリへの登録
 
 ## ライセンス・権利表記
 
