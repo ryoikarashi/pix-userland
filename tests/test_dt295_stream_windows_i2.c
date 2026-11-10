@@ -35,6 +35,7 @@ static unsigned fake_event_head;
 static unsigned fake_event_count;
 static unsigned fake_active_count;
 static unsigned fake_cancel_requests;
+static unsigned fake_clear_halts;
 static unsigned fake_frees;
 static int fake_hold_cancel;
 
@@ -85,6 +86,7 @@ static void fake_reset(int hold_cancel)
     fake_event_head = 0U;
     fake_event_count = 0U;
     fake_cancel_requests = 0U;
+    fake_clear_halts = 0U;
     fake_frees = 0U;
     fake_hold_cancel = hold_cancel;
     pthread_mutex_unlock(&fake_mutex);
@@ -206,9 +208,26 @@ void LIBUSB_CALL libusb_free_transfer(struct libusb_transfer *transfer)
     free(transfer);
 }
 
+int LIBUSB_CALL libusb_clear_halt(libusb_device_handle *handle, unsigned char endpoint)
+{
+    (void)handle;
+    pthread_mutex_lock(&fake_mutex);
+    if (endpoint != 0x81U) {
+        pthread_mutex_unlock(&fake_mutex);
+        return LIBUSB_ERROR_NOT_FOUND;
+    }
+    ++fake_clear_halts;
+    pthread_mutex_unlock(&fake_mutex);
+    return LIBUSB_SUCCESS;
+}
+
 int LIBUSB_CALL libusb_submit_transfer(struct libusb_transfer *transfer)
 {
     pthread_mutex_lock(&fake_mutex);
+    if (fake_clear_halts == 0U) {
+        pthread_mutex_unlock(&fake_mutex);
+        return LIBUSB_ERROR_OTHER;
+    }
     struct fake_transfer *item = find_transfer_locked(transfer);
     if (item == NULL || item->active || item->queued) {
         pthread_mutex_unlock(&fake_mutex);

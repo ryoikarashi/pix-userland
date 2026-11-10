@@ -40,6 +40,7 @@ std::mutex g_transfer_mutex;
 std::vector<libusb_transfer *> g_transfers;
 std::atomic<bool> g_release_callbacks{false};
 std::atomic<unsigned> g_cancelled{0U};
+std::atomic<unsigned> g_cleared{0U};
 std::atomic<unsigned> g_freed{0U};
 std::atomic<unsigned> g_stops{0U};
 std::atomic<unsigned> g_destroyed{0U};
@@ -177,7 +178,17 @@ extern "C" int __wrap_random_bytes(void *output, std::size_t length)
     return 0;
 }
 
-extern "C" int __wrap_libusb_submit_transfer(libusb_transfer *) { return 0; }
+extern "C" int __wrap_libusb_clear_halt(libusb_device_handle *, unsigned char endpoint)
+{
+    if (endpoint != 0x81U) return LIBUSB_ERROR_NOT_FOUND;
+    ++g_cleared;
+    return LIBUSB_SUCCESS;
+}
+
+extern "C" int __wrap_libusb_submit_transfer(libusb_transfer *)
+{
+    return g_cleared.load() != 0U ? LIBUSB_SUCCESS : LIBUSB_ERROR_OTHER;
+}
 
 extern "C" int __wrap_libusb_cancel_transfer(libusb_transfer *transfer)
 {
@@ -359,6 +370,7 @@ int main(int argc, char **argv)
     REQUIRE(adapter->open(0U));
     REQUIRE(adapter->program_hz(0U, ReceiverSystem::terrestrial, 473142857ULL, 1000U));
     REQUIRE(adapter->start_capture(0U, ReceiverSystem::terrestrial));
+    REQUIRE(g_cleared.load() != 0U);
 
     int rc = 0;
     if (mode == "detach")

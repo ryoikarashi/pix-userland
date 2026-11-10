@@ -275,6 +275,11 @@ int dt295_stream_start(libusb_context *context, libusb_device_handle *handle, dt
     if (!out || !context || !handle)
         return LIBUSB_ERROR_INVALID_PARAM;
     *out = NULL;
+    /* Cancelling the previous async stream can leave EP81 uncleared; without
+     * this, replacement URBs are accepted but never complete on Linux. */
+    const int cleared = libusb_clear_halt(handle, 0x81);
+    if (cleared != LIBUSB_SUCCESS)
+        return cleared;
     dt295_stream *s = allocate_stream(DT295_STREAM_RING_BLOCKS, DT295_STREAM_TRANSFERS);
     if (!s)
         return LIBUSB_ERROR_NO_MEM;

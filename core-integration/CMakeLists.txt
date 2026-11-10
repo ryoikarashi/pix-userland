@@ -179,7 +179,7 @@ target_link_options(pix_dt295_stream_retirement_proof PRIVATE
     -Wl,--wrap=usb_open_model -Wl,--wrap=usb_close
     -Wl,--wrap=usb_native_context -Wl,--wrap=usb_native_handle
     -Wl,--wrap=libusb_control_transfer -Wl,--wrap=libusb_bulk_transfer
-    -Wl,--wrap=libusb_interrupt_transfer
+    -Wl,--wrap=libusb_interrupt_transfer -Wl,--wrap=libusb_clear_halt
     -Wl,--wrap=random_bytes
     -Wl,--wrap=libusb_submit_transfer -Wl,--wrap=libusb_cancel_transfer
     -Wl,--wrap=libusb_handle_events_timeout_completed
