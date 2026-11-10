@@ -20,6 +20,10 @@ typedef struct {
     unsigned auth_requests, init_commands, shutdown_commands, start_commands;
     unsigned renewal_challenges, renewal_applies;
     unsigned status_notifications, status_acks, status_reads, control_delay_ms;
+    unsigned config_reads, config_writes;
+    int fail_config_write;
+    unsigned completion_delay_ms;
+    uint64_t command_ready_ms;
     uint32_t fail_secure_id;
     int pause_pending, fail_state_read_once, inject_post_auth_fault;
     int hold_card_activation_state, fail_card_activation_command;
@@ -169,6 +173,16 @@ static int control(void *u, uint8_t rt, uint8_t req, uint16_t value, uint16_t in
     *actual = n;
     if (req == 0xbc) {
         uint32_t addr = (uint32_t)(value >> 8) << 16 | index;
+        if (addr >= 0x1000 && addr + n <= 0x1b00) {
+            if (rt & 0x80)
+                ++f->config_reads;
+            else
+                ++f->config_writes;
+            if (!(rt & 0x80) && addr == 0x1140 && f->fail_config_write) {
+                f->fail_config_write = 0;
+                return -1;
+            }
+        }
         if (addr + n > MEMSIZE)
             return -1;
         if ((rt & 0x80) && addr == 0x90074 && n == 2)
@@ -179,6 +193,8 @@ static int control(void *u, uint8_t rt, uint8_t req, uint16_t value, uint16_t in
         }
         if ((rt & 0x80) && addr == 0x90074 && n == 2 && f->status_notifications != 0U)
             wr16(data, 0x200);
+        else if ((rt & 0x80) && addr == 0x90074 && n == 2 && f->now < f->command_ready_ms)
+            wr16(data, (uint16_t)(rd16(f->mem + addr) & ~(2 | 8 | 0x100)));
         else if (rt & 0x80)
             memcpy(data, f->mem + addr, n);
         else if (addr == 0x90074 && n == 2) {
@@ -193,6 +209,7 @@ static int control(void *u, uint8_t rt, uint8_t req, uint16_t value, uint16_t in
         return 0;
     }
     if (req == 0xb8 || req == 0xb9) {
+        f->command_ready_ms = f->now + f->completion_delay_ms;
         if (n != 4)
             return -1;
         uint8_t cmd = data[0], sub = data[1];
@@ -319,7 +336,9 @@ static int bulk(void *u, uint8_t ep, uint8_t *p, size_t n, unsigned timeout, siz
     return -1;
 }
 static int interrupt(void *u, uint8_t ep, uint8_t *p, size_t n, unsigned timeout, size_t *actual) {
-    (void)u;
+    fake *f = u;
+    if (f->completion_delay_ms)
+        f->now += timeout; /* Completion occurs without an interrupt notification. */
     (void)ep;
     (void)p;
     (void)n;
@@ -335,7 +354,7 @@ static void sleep_fake(void *u, unsigned ms) {
 }
 
 static void create_assets(const char *path, fake *f) {
-    uint8_t idle[1] = {0x11}, trc[1] = {0x22}, field[8] = {0},
+    uint8_t idle[1] = {0x11}, trc[1] = {0x22}, field[56] = {0},
             keyreq[12] = {0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3};
     for (size_t i = 0; i < sizeof(f->material); i++)
         f->material[i] = (uint8_t)(i * 17 + 3);
@@ -359,6 +378,13 @@ static void create_assets(const char *path, fake *f) {
     field[2] = 0;
     field[3] = 1;
     field[4] = 1; /* address 1000, bit 0 = 1 */
+    /* Disjoint fields share a word; the last word exercises the image boundary. */
+    memcpy(field + 8, (uint8_t[]){0x22, 0x11, 4, 4, 0x0a, 0, 0, 0}, 8);
+    memcpy(field + 16, (uint8_t[]){0xfe, 0x1a, 0, 16, 0x34, 0x12, 0, 0}, 8);
+    memcpy(field + 24, (uint8_t[]){0x22, 0x11, 0, 4, 0x05, 0, 0, 0}, 8);
+    memcpy(field + 32, (uint8_t[]){0x20, 0x10, 0, 16, 0xad, 0x8b, 0, 0}, 8);
+    memcpy(field + 40, (uint8_t[]){0xa2, 0x10, 0, 16, 0x7f, 0x7f, 0, 0}, 8);
+    memcpy(field + 48, (uint8_t[]){0x22, 0x11, 2, 4, 0x0e, 0, 0, 0}, 8);
     FILE *fp = fopen(path, "wb");
     assert(fp);
     assert(fwrite("D295A1\0\0", 1, 8, fp) == 8);
@@ -414,6 +440,34 @@ static void test_asset_rejection(const char *path) {
     memcpy(data + 12, (uint8_t[1]){(uint8_t)(data[12] ^ 1)}, 1);
     rewrite_asset_file(path, data, (size_t)sz);
     free(data);
+}
+
+static void test_receive_config_failure(const dt295_assets *assets, const fake *source) {
+    fake f = {0};
+    f.mem = calloc(1, MEMSIZE);
+    assert(f.mem);
+    memcpy(f.material, source->material, sizeof(f.material));
+    memcpy(f.ts_iv, source->ts_iv, sizeof(f.ts_iv));
+    wr16(f.mem + 0x82008, 0x10);
+    wr16(f.mem + 0x822ac, 0x3000);
+    dt295_io io = {&f, control, bulk, interrupt, now, sleep_fake};
+    dt295 *d = NULL;
+    char error[256];
+    assert(dt295_create(&d, &io, assets, error, sizeof(error)) == 0);
+    assert(dt295_boot(d, error, sizeof(error)) == 0);
+    assert(dt295_open_session(d, error, sizeof(error)) == 0);
+    assert(dt295_tune_terrestrial(d, 25, error, sizeof(error)) == 0);
+    f.fail_config_write = 1;
+    dt295_route_plan plan = {0};
+    assert(dt295_prepare_plan(d, &plan, error, sizeof(error)) < 0);
+    assert(strcmp(error, "receive configuration upload failed") == 0);
+    assert(f.acquire_commands == 0 && f.config_writes == 6);
+    const unsigned calls = f.control_calls;
+    assert(dt295_prepare_plan(d, &plan, error, sizeof(error)) < 0);
+    assert(f.control_calls == calls);
+    assert(dt295_shutdown(d, error, sizeof(error)) == 0);
+    dt295_destroy(d);
+    free(f.mem);
 }
 
 static void test_authenticated_setup_failure_cleanup(const dt295_assets *assets,
@@ -474,6 +528,7 @@ int main(void) {
     assert(dt295_assets_load(path, &assets, error, sizeof(error)) == 0);
     remove(path);
     test_authenticated_setup_failure_cleanup(assets, &f);
+    test_receive_config_failure(assets, &f);
     dt295_io io = {&f, control, bulk, interrupt, now, sleep_fake};
     dt295 *d = NULL;
     assert(dt295_create(&d, &io, assets, error, sizeof(error)) == 0);
@@ -556,11 +611,15 @@ int main(void) {
     f.status_notifications = 0U;
     wr16(f.mem + 0x90074, 0);
     wr16(f.mem + 0x822ac, 0x3000);
+    f.completion_delay_ms = 2;
+    const uint64_t tune_started = f.now;
     if (dt295_tune_terrestrial(d, 27, error, sizeof(error)) != 0) {
         fprintf(stderr, "tune: %s (%u I2C commands pending=%04x)\n", error, f.i2c_commands,
                 rd16(f.mem + 0x90074));
         abort();
     }
+    assert(f.now - tune_started < 1500U);
+    f.completion_delay_ms = 0;
     dt295_route_plan plan = {0};
     plan.routes[0] = (dt295_route){0, 1, 0, 0, 0x301, 6};
     plan.routes[1] = (dt295_route){1, 1, 0, 0, 0x302, 63};
@@ -574,11 +633,29 @@ int main(void) {
     plan.video_stream_type = 2;
     plan.audio_stream_type = 4;
     wr16(f.mem + 0x1070, 0xffff);
+    wr16(f.mem + 0x0ffe, 0xcafe);
+    wr16(f.mem + 0x1b00, 0xbeef);
     if (dt295_prepare_plan(d, &plan, error, sizeof(error)) != 0) {
         fprintf(stderr, "prepare: %s\n", error);
         abort();
     }
     assert(f.key_requests == 1);
+    assert(f.config_reads == 0);
+    assert(f.config_writes == 0xb00 / 64);
+    assert(rd16(f.mem + 0x1122) == 0x00b9);
+    assert(rd16(f.mem + 0x1afe) == 0x1234);
+    assert(rd16(f.mem + 0x0ffe) == 0xcafe && rd16(f.mem + 0x1b00) == 0xbeef);
+    uint8_t expected[0xb00] = {0};
+    const uint16_t words[][2] = {
+        {0x1000, 1}, {0x1018, 0x1234}, {0x101c, 0x0204}, {0x101e, 0x8301},
+        {0x1020, 0x8302}, {0x102a, 0x8206}, {0x106c, 0x8101}, {0x106e, 0x8102},
+        {0x109c, 0x83ff},
+        {0x10a2, 0x063f}, {0x10a8, 0x0600}, {0x10e0, 0x003f},
+        {0x1122, 0x00b9}, {0x1afe, 0x1234}
+    };
+    for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); ++i)
+        wr16(expected + (words[i][0] - 0x1000), words[i][1]);
+    assert(memcmp(f.mem + 0x1000, expected, sizeof(expected)) == 0);
     assert(rd16(f.mem + 0x1018) == 0x1234);
     assert(rd16(f.mem + 0x101c) == 0x0204);
     assert(rd16(f.mem + 0x101e) == 0x8301);
@@ -596,11 +673,21 @@ int main(void) {
     size_t drained = 0;
     assert(dt295_stop(d, &drained, error, sizeof(error)) == 0);
     assert(dt295_state(d) == 0x11);
+    memset(&plan.routes[1], 0, sizeof(plan.routes[1]));
+    memset(&plan.routes[63], 0, sizeof(plan.routes[63]));
+    plan.route_count -= 2;
+    memset(f.mem + 0x1000, 0xff, sizeof(expected));
     if (dt295_reprepare_plan(d, &plan, error, sizeof(error)) != 0) {
         fprintf(stderr, "reprepare: %s\n", error);
         abort();
     }
     assert(f.key_requests == 1);
+    assert(f.config_reads == 0 && f.config_writes == 2 * (0xb00 / 64));
+    wr16(expected + 0x20, 0);
+    wr16(expected + 0x9c, 0);
+    wr16(expected + 0xa2, 0x0600);
+    wr16(expected + 0xe0, 0);
+    assert(memcmp(f.mem + 0x1000, expected, sizeof(expected)) == 0);
     assert(f.acquire_commands == 2);
     assert(dt295_start(d, error, sizeof(error)) == 0);
     assert(dt295_stop(d, &drained, error, sizeof(error)) == 0);

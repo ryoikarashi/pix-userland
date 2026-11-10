@@ -53,8 +53,8 @@ tests/test-dt295-assets-c: tests/test_dt295_assets.c src/dt295.c src/dt295_crypt
 	$(CC) $(CPPFLAGS) -Isrc $(CFLAGS) $(WARN) $(LDFLAGS) -o $@ $^ $(OS_LIBS)
 tests/test-dt295-routes: tests/test_dt295_routes.c src/dt295_routes.c src/transport.c src/crypto.c src/platform.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) $(LDFLAGS) -o $@ $^ $(OS_LIBS)
-tests/test-dt295-stream: tests/test_dt295_stream.c src/dt295_stream.c
-	$(CC) $(CPPFLAGS) $(USB_CFLAGS) $(CFLAGS) $(WARN) -DDT295_STREAM_TESTING $(LDFLAGS) -o $@ $^ $(USB_LIBS) $(OS_LIBS)
+tests/test-dt295-stream: tests/test_dt295_stream.c src/dt295_stream.c include/dt295_stream.h
+	$(CC) $(CPPFLAGS) $(USB_CFLAGS) $(CFLAGS) $(WARN) -DDT295_STREAM_TESTING $(LDFLAGS) -o $@ $(filter %.c,$^) $(USB_LIBS) $(OS_LIBS)
 tests/test-ts-output: tests/test_ts_output.c src/ts_output.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARN) -DTS_OUTPUT_TESTING $(LDFLAGS) -o $@ $^ $(OS_LIBS)
 

@@ -424,8 +424,9 @@ static int wait_event(dt295 *d, uint16_t mask, unsigned timeout) {
         if (now >= end)
             return -1;
         unsigned left = (unsigned)(end - now);
-        if (left > 50)
-            left = 50;
+        /* The pending register can become ready before EP83 reports it. */
+        if (left > 1)
+            left = 1;
         if (notify(d, left))
             return -1;
     }
@@ -1454,7 +1455,23 @@ int dt295_satellite_status(dt295 *d, dt295_satellite_state *status, char *e, siz
     return 0;
 }
 
-static int set_route_fields(dt295 *d, const dt295_route_op *op) {
+enum { RECEIVE_CONFIG_BASE = 0x1000, RECEIVE_CONFIG_BYTES = 0xb00 };
+
+static int config_field(uint8_t *config, uint32_t address, unsigned shift, unsigned width,
+                         unsigned value) {
+    if (address < RECEIVE_CONFIG_BASE || address > RECEIVE_CONFIG_BASE + RECEIVE_CONFIG_BYTES - 2 ||
+        (address & 1) || shift > 15 || !width || width > 16 - shift || value >= (1u << width))
+        return -1;
+    uint8_t *p = config + (address - RECEIVE_CONFIG_BASE);
+    uint16_t old = (uint16_t)((uint16_t)p[0] << 8 | p[1]);
+    uint16_t mask = (uint16_t)(((1u << width) - 1) << shift);
+    uint16_t next = (uint16_t)((old & ~mask) | (value << shift));
+    p[0] = (uint8_t)(next >> 8);
+    p[1] = (uint8_t)next;
+    return 0;
+}
+
+static int set_route_fields(uint8_t *config, const dt295_route_op *op) {
     unsigned s = op->slot;
     if (s > 63 || op->enabled > 1 || op->pid > 8191 || op->ecm_slot > 63)
         return -1;
@@ -1472,19 +1489,19 @@ static int set_route_fields(dt295 *d, const dt295_route_op *op) {
         pa = 0x106e;
     else
         pa = 0x1070 + 2 * (s - 41);
-    if (field(d, pa, 0, 13, op->enabled ? op->pid : 0) ||
-        field(d, pa, enable_shift, 1, op->enabled))
+    if (config_field(config, pa, 0, 13, op->enabled ? op->pid : 0) ||
+        config_field(config, pa, enable_shift, 1, op->enabled))
         return -1;
     if (s < 2) {
-        if (field(d, 0x10a2, s ? 0 : 8, 7, op->enabled ? op->ecm_slot : 0))
+        if (config_field(config, 0x10a2, s ? 0 : 8, 7, op->enabled ? op->ecm_slot : 0))
             return -1;
     } else if (s == 5) {
-        if (field(d, 0x10a6, 0, 7, op->enabled ? op->ecm_slot : 0))
+        if (config_field(config, 0x10a6, 0, 7, op->enabled ? op->ecm_slot : 0))
             return -1;
     } else if (s >= 6) {
         uint32_t ea = 0x10a8 + 2 * ((s - 6) / 2);
         unsigned sh = (s & 1u) ? 0 : 8;
-        if (field(d, ea, sh, 7, op->enabled ? op->ecm_slot : 0))
+        if (config_field(config, ea, sh, 7, op->enabled ? op->ecm_slot : 0))
             return -1;
     }
     return 0;
@@ -1539,14 +1556,11 @@ static int prepare_config(dt295 *d, const dt295_route_op *routes, size_t count, 
     }
     if (word(d, 0x82008, &s) || s != 0x11)
         return fail(d, e, en, "TRC upload did not retain idle state");
-    const uint32_t clear[][2] = {{0x1000, 0x500}, {0x1500, 0x500}, {0x1a00, 0x100}};
-    uint8_t zero[0x500] = {0};
-    for (unsigned i = 0; i < 3; i++)
-        if (wr(d, clear[i][0], zero, clear[i][1]))
-            return fail(d, e, en, "receive configuration clear failed");
+    /* Firmware consumes this RAM image at ACQUIRE; assemble fields before uploading. */
+    uint8_t config[RECEIVE_CONFIG_BYTES] = {0};
     for (size_t i = 0; i < d->assets->field_count; i++) {
         dt295_field *f = &d->assets->fields[i];
-        if (field(d, f->address, f->shift, f->width, f->value))
+        if (config_field(config, f->address, f->shift, f->width, f->value))
             return fail(d, e, en, "private receive profile apply failed");
     }
     /* Replace every route register so stale private channel PIDs cannot survive. */
@@ -1556,16 +1570,19 @@ static int prepare_config(dt295 *d, const dt295_route_op *routes, size_t count, 
         blank.enabled = 0;
         blank.pid = 0;
         blank.ecm_slot = 0;
-        if (set_route_fields(d, &blank))
+        if (set_route_fields(config, &blank))
             return fail(d, e, en, "route table clear failed");
     }
     for (size_t i = 0; i < count; i++) {
-        if (set_route_fields(d, &routes[i]))
+        if (set_route_fields(config, &routes[i]))
             return fail(d, e, en, "initial route apply failed");
     }
-    if (putword(d, 0x1018, program) || field(d, 0x101c, 8, 8, video_type) ||
-        field(d, 0x101c, 0, 8, audio_type))
-        return fail(d, e, en, "program metadata apply failed");
+    config[0x18] = (uint8_t)(program >> 8);
+    config[0x19] = (uint8_t)program;
+    config[0x1c] = video_type;
+    config[0x1d] = audio_type;
+    if (wr(d, RECEIVE_CONFIG_BASE, config, sizeof(config)))
+        return fail(d, e, en, "receive configuration upload failed");
     if (putword(d, 0x82028, 0) || command(d, 4, 0x20, 0, 0, NULL) || wait_state(d, 1, 30000))
         return fail(d, e, en, "receive acquisition did not reach configured state");
     uint16_t dma = 0;

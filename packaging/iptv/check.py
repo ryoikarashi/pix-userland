@@ -2,6 +2,7 @@
 """Check the channel list, XMLTV associations and each channel's TS output."""
 import argparse
 import re
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -31,12 +32,15 @@ def check(base_url):
     for channel_id, name, url in entries:
         assert channel_id in channels, f"{name}: missing XMLTV channel"
         assert channel_id in covered, f"{name}: no programme information"
+        started = time.monotonic()
         with urllib.request.urlopen(url, timeout=60) as response:
             assert response.status == 200, f"{name}: stream unavailable"
-            packets = response.read(188 * 64)
+            first = response.read(188)
+            first_ts_seconds = time.monotonic() - started
+            packets = first + response.read(188 * 63)
         assert len(packets) == 188 * 64, f"{name}: no TS output"
         assert all(packets[offset] == 0x47 for offset in range(0, len(packets), 188)), name
-        print(f"PASS {name}: guide and TS", flush=True)
+        print(f"PASS {name}: guide and TS, first TS {first_ts_seconds:.3f}s", flush=True)
     print(f"PASS {len(entries)} channels, {len(programmes)} programmes", flush=True)
 
 
